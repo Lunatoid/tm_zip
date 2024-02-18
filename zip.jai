@@ -79,7 +79,7 @@ zip_load_memory :: (file: string) -> Zip, bool {
         mem_seek(*stream, it.local_file_header_offset, .START);
         local_file := array_add(*zip.local_files);
 
-        if !read_local_file(*stream, local_file) {
+        if !read_local_file(*stream, local_file, it.compressed_size) {
             zip_free(*zip);
             return .{}, false;
         }
@@ -136,6 +136,7 @@ CENTRAL_DIR_MAGIC: u32: 0x02014b50;
 EOCD_MAGIC: u32: 0x06054b50;
 EOCD64_MAGIC: u32: 0x06064b50;
 ZIP64_LOCATOR_MAGIC: u32: 0x07064b50;
+DATA_DESCRIPTOR_MAGIC: u32: 0x08074b50;
 
 Extra_Field_ID :: enum u16 {
     ZIP64_EXTRA_HEADER :: 0x0001;
@@ -146,9 +147,9 @@ Extra_Field_ID :: enum u16 {
 }
 
 General_Bit :: enum_flags u16 {
-    ENCRYPTED         :: 0x0;
-    DATA_DESCRIPTOR   :: 0x3;
-    LANGUAGE_ENCODING :: 0x11;
+    ENCRYPTED         :: 0;
+    DATA_DESCRIPTOR   :: 3;
+    LANGUAGE_ENCODING :: 11;
 }
 
 Local_File :: struct {
@@ -227,7 +228,7 @@ Central_Dir :: struct {
     extra_field: [..] u8;
 }
 
-read_local_file :: (stream: *Memory_Stream, local_file: *Local_File) -> bool {
+read_local_file :: (stream: *Memory_Stream, local_file: *Local_File, central_dir_compressed_size: u64) -> bool {
     magic: u32;
     mem_read(stream, *magic);
 
@@ -265,6 +266,7 @@ read_local_file :: (stream: *Memory_Stream, local_file: *Local_File) -> bool {
 
     extra_field := mem_open(local_file.extra_field);
 
+    is_zip64 := false;
     while mem_can_read(*extra_field) {
         id: Extra_Field_ID;
         length: u16;
@@ -273,6 +275,7 @@ read_local_file :: (stream: *Memory_Stream, local_file: *Local_File) -> bool {
 
         if #complete id == {
             case .ZIP64_EXTRA_HEADER;
+                is_zip64 = true;
                 if uncompressed_size == U32_MAX mem_read(*extra_field, *local_file.uncompressed_size);
                 if compressed_size == U32_MAX mem_read(*extra_field, *local_file.compressed_size);
                 continue;
@@ -298,7 +301,7 @@ read_local_file :: (stream: *Memory_Stream, local_file: *Local_File) -> bool {
             case .NTFS;
 
             case;
-                print("Zip: unrecognized extra field 0x%", formatInt(cast(int) id, 16, 4));
+                log_error("Zip: unrecognized extra field 0x%", formatInt(cast(int) id, 16, 4));
         }
 
         // If we're here we didn't handle the extra field. Skip.
@@ -306,6 +309,30 @@ read_local_file :: (stream: *Memory_Stream, local_file: *Local_File) -> bool {
     }
 
     local_file.data_start = xx mem_current_position(stream);
+
+    if (local_file.general_bitflag & (1 << General_Bit.DATA_DESCRIPTOR)) != 0 {
+        mem_seek(stream, xx central_dir_compressed_size, .CURRENT);
+
+        magic: u32;
+        mem_read(stream, *magic);
+        if magic != DATA_DESCRIPTOR_MAGIC {
+            mem_seek(stream, -4, .CURRENT);
+        }
+
+        mem_read(stream, *local_file.crc32);
+        if is_zip64 {
+            mem_read(stream, *local_file.compressed_size);
+            mem_read(stream, *local_file.uncompressed_size);
+        } else {
+            compressed_size, uncompressed_size: u32;
+            mem_read(stream, *compressed_size);
+            mem_read(stream, *uncompressed_size);
+
+            local_file.compressed_size = compressed_size;
+            local_file.uncompressed_size = uncompressed_size;
+        }
+    }
+
     return true;
 }
 
