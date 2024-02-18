@@ -38,6 +38,7 @@ zip_free :: (zip: *Zip) {
     array_free(zip.entries);
     array_free(zip.central_dirs);
     array_free(zip.local_files);
+    free(zip.file);
 }
 
 zip_load_memory :: (file: string) -> Zip, bool {
