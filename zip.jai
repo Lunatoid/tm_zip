@@ -95,18 +95,16 @@ zip_load_memory :: (file: string) -> Zip, bool {
 }
 
 zip_extract_to_file :: (zip: *Zip, name: string, output_path: string) -> bool {
-    bytes: string;
-    defer free(bytes);
+    bytes: [..] u8;
+    bytes.allocator = temp;
 
     success := zip_extract(zip, name, *bytes);
 
-    if success write_entire_file(output_path, bytes);
+    if success write_entire_file(output_path, cast(string) bytes);
     return success;
 }
 
-zip_extract :: (zip: *Zip, name: string, output: *string, allocator: Allocator = .{}) -> bool {
-    bytes: [..] u8;
-
+zip_extract :: (zip: *Zip, name: string, output: *[..] u8) -> bool {
     entry: *Local_File = null;
     for * zip.local_files {
         if it.file_name == name {
@@ -117,7 +115,7 @@ zip_extract :: (zip: *Zip, name: string, output: *string, allocator: Allocator =
 
     if !entry return false;
 
-    return extract_local_file(zip, entry, output, allocator);
+    return extract_local_file(zip, entry, output);
 }
 
 zip_has_entry :: (zip: *Zip, name: string) -> bool {
@@ -462,7 +460,7 @@ read_eocd :: (stream: *Memory_Stream, eocd: *EOCD) -> bool {
     return true;
 }
 
-extract_local_file :: (zip: *Zip, entry: *Local_File, output: *string, allocator: Allocator = .{}) -> bool {
+extract_local_file :: (zip: *Zip, entry: *Local_File, output: *[..] u8) -> bool {
     if entry.general_bitflag & General_Bit.ENCRYPTED {
         log_error("Zip: cannot extract '%', entry is encrypted", entry.file_name);
         return false;
@@ -474,15 +472,15 @@ extract_local_file :: (zip: *Zip, entry: *Local_File, output: *string, allocator
             input.data = zip.file.data + entry.data_start;
             input.count = xx entry.compressed_size; // Uncompressed size will be 0
 
-            output.* = copy_string(input,, allocator);
+            array_resize(output, input.count);
+            memcpy(output.data, input.data, input.count);
 
         case .DEFLATE;
             input: string;
             input.count = xx entry.compressed_size;
             input.data = zip.file.data + entry.data_start;
 
-            output.count = xx entry.uncompressed_size;
-            output.data = alloc(output.count,, allocator);
+            array_resize(output, cast(int) entry.uncompressed_size, false);
 
             stbi_zlib_decode_noheader_buffer(output.data, xx output.count, input.data, xx input.count);
 
